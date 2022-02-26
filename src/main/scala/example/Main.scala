@@ -280,7 +280,7 @@ object Hello extends App with Selectors with ElemActions with WebsiteConfig {
         )
   )
 
-  pageRanges.flatMap(makeEffect).sequence.unsafeRunSync()
+  //pageRanges.flatMap(makeEffect).sequence.unsafeRunSync()
   println("done")
 
 }
