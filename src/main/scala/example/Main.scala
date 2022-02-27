@@ -14,6 +14,7 @@ import org.scalajs.dom.{
 
 import cats._
 import cats.effect.IO
+import cats.effect.IOApp
 import cats.implicits._
 import cats.syntax.traverse
 import scala.collection.WithFilter
@@ -23,7 +24,48 @@ import scala.scalajs.js.{Date}
 import cats.syntax.flatMap
 import org.w3c.dom.html
 import cats.data.Chain
+//import scala.scalajs.js.Promise
+import scala.scalajs.js.timers
+import scala.concurrent._
+import scala.scalajs.concurrent._
+//import ExecutionContext.Implicits.global
+//import scala.scalajs.concurrent.JSExecutionContext.Implicits._
+//import scala.concurrent.duration.{Duration, MILLISECONDS}
+import cats.effect.Clock
+import scala.concurrent.duration.FiniteDuration
+import java.util.concurrent.ScheduledExecutorService
+//import Timer[cats.effect.IO]
+//import cats.effect.{IO,  Clock}
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
 
+trait Timer[F[_]] {
+  def clock: Clock[F]
+  def sleep(duration: FiniteDuration): F[Unit]
+}
+
+final class MyTimer(ec: ExecutionContext, sc: ScheduledExecutorService)
+    extends Timer[IO] {
+  override val clock: Clock[IO] =
+    new Clock[IO] {
+      override def realTime(unit: TimeUnit): IO[Long] =
+        IO(unit.convert(System.currentTimeMillis(), MILLISECONDS))
+
+      override def monotonic(unit: TimeUnit): IO[Long] =
+        IO(unit.convert(System.nanoTime(), NANOSECONDS))
+    }
+
+  override def sleep(timespan: FiniteDuration): IO[Unit] =
+    IO.cancelable { cb =>
+      val tick = new Runnable {
+        def run() = ec.execute(new Runnable {
+          def run() = cb(Right(()))
+        })
+      }
+      val f = sc.schedule(tick, timespan.length, timespan.unit)
+      IO(f.cancel(false)).void
+    }
+}
 /// A namespace for different ways of refering to nodes of a webpage
 /// All selectors return a functor of N where N <: Node
 trait Selectors {
@@ -162,23 +204,26 @@ trait ElemActions {
     n.options.toList.zipWithIndex.map((opt_idx => changeIndex(opt_idx._2)(n)))
   }
 
-  def delay(milliseconds: Int): IO[Unit] = {
-    IO {
-      val start = milliseconds + Date.now()
-      while (start > Date.now()) {}
-    } *> IO.unit
-  }
+  /*
+  def delay(milliseconds: Int): IO[Unit] = { //Future[Unit] = {
+    val p = scala.concurrent.Promise[Unit]()
+    timers.setTimeout(milliseconds) {
+      p.success(())
+    }
+    IO { Await.result(p.future, Duration(10 * milliseconds, MILLISECONDS)) }
+  } */
 
-  def delayed[T](milliseconds: Int, action: IO[T]): IO[T] = {
-    delay(milliseconds) >> action
-  }
-
-  def delayedAction[T, A](
-      milliseconds: Int,
-      action: A => IO[T]
-  ): (A => IO[T]) = { a =>
-    delayed(milliseconds, action(a))
-  }
+  /*
+  def sleep(timespan: FiniteDuration): IO[Unit] =
+    IO.cancelable { cb =>
+      val tick = new Runnable {
+        def run() = ec.execute(new Runnable {
+          def run() = cb(Right(()))
+        })
+      }
+      val f = sc.schedule(tick, timespan.length, timespan.unit)
+      IO(f.cancel(false)).void
+    } */
 
   def clickWithText(
       text: String
@@ -249,7 +294,26 @@ trait WebsiteConfig {
   val fileType = "ASCII Text File (Tab Separated)"
 }
 
-object Hello extends App with Selectors with ElemActions with WebsiteConfig {
+object Hello extends IOApp with Selectors with ElemActions with WebsiteConfig {
+
+  def delay(milliseconds: Int): IO[Unit] = {
+    ///IO {
+    // val start = milliseconds + Date.now()
+    //  while (start > Date.now()) {}
+    //  } *> IO.unit
+    IO.sleep(FiniteDuration(milliseconds, MILLISECONDS))
+  }
+
+  def delayed[T](milliseconds: Int, action: IO[T]): IO[T] = {
+    delay(milliseconds) >> action
+  }
+
+  def delayedAction[T, A](
+      milliseconds: Int,
+      action: A => IO[T]
+  ): (A => IO[T]) = { a =>
+    delayed(milliseconds, action(a))
+  }
 
   def enterZipcode(zipcode: String): IO[Unit] = {
     (getElementById(zipInputID) traverse changeValue(zipcode)) *> IO.unit
@@ -268,19 +332,22 @@ object Hello extends App with Selectors with ElemActions with WebsiteConfig {
         List(
           getElemByXPath("//img[@alt='OK']") traverse click,
           getElementById(fileTypeDropDownID) traverse click,
-          //delay(1000),
+          delay(1000),
           elemThatContainsText(fileType) traverse click,
           getElemByXPath("//label[contains(text(),'Pages')]") traverse click,
           getElementById(pageRangeClickId) traverse changeValue(range),
-          //delay(500),
           getElemByXPath("//label[contains(text(),'Pages')]") traverse click,
-          //delay(500),
-          getElementById("btnExportRecords") traverse click
-          //delay(5 * 1000)
+          delay(4 * 1000),
+          getElementById(pageRangeClickId) traverse changeValue(range),
+          getElemByXPath("//label[contains(text(),'Pages')]") traverse click,
+          delay(500),
+          getElementById("btnExportRecords") traverse click,
+          delay(5 * 1000)
         )
   )
-
-  pageRanges.flatMap(makeEffect).sequence.unsafeRunSync()
-  println("done")
+  def run(args: List[String]): IO[cats.effect.ExitCode] =
+    pageRanges.flatMap(makeEffect).sequence *> IO {
+      cats.effect.ExitCode(0)
+    }
 
 }
